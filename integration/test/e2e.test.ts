@@ -165,6 +165,29 @@ describe("ghostty engine specifics", () => {
     });
   }, 30_000);
 
+  // Bun's tty stream never resumes reading for a readable listener attached
+  // to a paused stream with an empty buffer, so the query must not leave
+  // stdin paused when the app takes it back.
+  test("keys still arrive under Bun once the capability query is answered", async () => {
+    const app = await launchTerminal(
+      [
+        "bun",
+        "--conditions=source",
+        path.join(repoRoot, "integration/test/fixtures/e2e-capabilities-input.ts"),
+      ],
+      { emulator: "ghostty" },
+    );
+    await closing(app, async () => {
+      await expect(app.getByText("queried waiting")).toBeVisible();
+
+      await app.press("ArrowDown");
+      await expect(app.getByText("queried moved")).toBeVisible();
+
+      await app.press("q");
+      expect(await app.waitForExit()).toBe(0);
+    });
+  }, 30_000);
+
   test("OSC 8 hyperlinks survive the real parser", async () => {
     const app = await launchTerminal(script("integration/test/fixtures/e2e-hyperlink.ts"), {
       emulator: "ghostty",
