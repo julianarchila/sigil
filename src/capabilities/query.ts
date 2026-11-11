@@ -367,6 +367,21 @@ export const queryTerminal = async (
     let receivedStrings = false;
     let done = false;
 
+    // Stops stdin flowing once the caller has had its turn, unless it attached
+    // a reader of its own. Pausing right away would break Bun: its tty stream
+    // never resumes reading for a readable listener attached to a paused
+    // stream with an empty buffer, so the application would never see another
+    // key, Ctrl+C included. The caller reattaches in the microtasks that
+    // follow `resolve`; pausing when nobody did keeps stdin from holding the
+    // process open.
+    const pauseIfUnclaimed = (): void => {
+      setImmediate(() => {
+        if (stdin.listenerCount("data") === 0 && stdin.listenerCount("readable") === 0) {
+          stdin.pause();
+        }
+      });
+    };
+
     const finish = (): void => {
       if (done) {
         return;
@@ -374,10 +389,6 @@ export const queryTerminal = async (
 
       done = true;
       clearTimeout(timer);
-      // Stop flowing before returning buffered bytes. Without this, unshift()
-      // can discard a partial reply between removing this data listener and
-      // the application's readable listener reattaching (especially on timeout).
-      stdin.pause();
       stdin.removeListener("data", onData);
 
       if (paletteColors.size === paletteSize) {
@@ -392,10 +403,17 @@ export const queryTerminal = async (
       result.systemAppearance = reportedAppearance;
       result.appearance = appearanceOf(result.background) ?? reportedAppearance;
 
-      // Re-emit whatever wasn't a query response so it isn't lost.
+      // Re-emit whatever wasn't a query response so it isn't lost. Stop
+      // flowing first: without this, unshift() can discard a partial reply
+      // between removing this data listener and the application's readable
+      // listener reattaching (especially on timeout). A non-empty buffer is
+      // also what lets Bun resume reading for that listener.
       if (buffer.length > 0) {
+        stdin.pause();
         stdin.unshift(receivedStrings ? buffer : Buffer.from(buffer, "latin1"));
         buffer = "";
+      } else {
+        pauseIfUnclaimed();
       }
 
       resolve(result);
@@ -551,8 +569,8 @@ export const queryTerminal = async (
       // until the timeout.
       done = true;
       clearTimeout(timer);
-      stdin.pause();
       stdin.removeListener("data", onData);
+      pauseIfUnclaimed();
       throw error;
     }
   });

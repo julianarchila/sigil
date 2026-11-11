@@ -367,6 +367,54 @@ describe("queryTerminal", () => {
     expect(stdin.unshift).toHaveBeenCalledWith("hello");
   });
 
+  test("pauses stdin before re-emitting user input", async () => {
+    const stdin = createQueryStdin();
+    const stdout = createStdout();
+
+    const promise = queryTerminal(stdin, stdout, { palette: false });
+    stdin.emit("data", `x${CSI}?62c`);
+    await promise;
+
+    expect(stdin.pause).toHaveBeenCalledTimes(1);
+    expect(stdin.pause.mock.invocationCallOrder[0]).toBeLessThan(
+      stdin.unshift.mock.invocationCallOrder[0],
+    );
+  });
+
+  // Bun's tty stream never resumes reading for a readable listener attached
+  // to a paused stream with an empty buffer: pausing here would leave the
+  // application deaf to every key, Ctrl+C included.
+  test("leaves stdin flowing for a reader attached after the answer", async () => {
+    const stdin = createQueryStdin();
+    const stdout = createStdout();
+
+    const promise = queryTerminal(stdin, stdout, { palette: false });
+    expect(stdin.resume).toHaveBeenCalledTimes(1);
+    stdin.emit("data", `${CSI}?62c`);
+    await promise;
+    // The application takes stdin back, as App does once the query resolves.
+    stdin.on("readable", () => {});
+    await new Promise(setImmediate);
+
+    expect(stdin.listenerCount("data")).toBe(0);
+    expect(stdin.pause).not.toHaveBeenCalled();
+    expect(stdin.unshift).not.toHaveBeenCalled();
+  });
+
+  test("pauses stdin when nothing takes it over after the answer", async () => {
+    const stdin = createQueryStdin();
+    const stdout = createStdout();
+
+    const promise = queryTerminal(stdin, stdout, { palette: false });
+    stdin.emit("data", `${CSI}?62c`);
+    await promise;
+    expect(stdin.pause).not.toHaveBeenCalled();
+    await new Promise(setImmediate);
+
+    // A flowing stdin with no reader would keep the process alive.
+    expect(stdin.pause).toHaveBeenCalledTimes(1);
+  });
+
   test("resolves with defaults on timeout", async () => {
     const stdin = createQueryStdin();
     const stdout = createStdout();
@@ -1036,5 +1084,7 @@ test("queryTerminal releases stdin when writing the query throws", async () => {
     "broken stdout",
   );
   expect(stdin.listenerCount("data")).toBe(0);
+  // Released once the caller has had its turn to take stdin back.
+  await new Promise(setImmediate);
   expect(stdin.readableFlowing).toBe(false);
 });
